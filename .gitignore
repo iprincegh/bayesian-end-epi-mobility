@@ -1,0 +1,7 @@
+.DS_Store
+outputs/
+mobilityCovid/
+*.zip
+2_figures.html
+2_figures_files/
+.quarto/

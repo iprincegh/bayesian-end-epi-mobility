@@ -1,0 +1,74 @@
+---
+title: "Daily replication of Slater et al. (2025), model 1: Catalunya"
+format: html
+params:
+  areas: catalunya
+  from: "2020-03-22"
+  to: "2021-05-01"
+  lag: week
+execute:
+  warning: false
+  message: false
+---
+
+The daily model of `1_barcelona.qmd` (`stan/daily.stan`, same inputs, priors and sampler settings) for all 374 ABS of
+Catalunya over their full period, 2020-03-22 to 2021-05-01: 151,844 ABS-days, about 19 times the Barcelona fit.
+Expect several hours per chain and a fit file of about 3 GB. Render from `end-epi/slater`; figures:
+`quarto render 3_figures.qmd -P areas:catalunya -P from:2020-03-22 -P to:2021-05-01 -P lag:week`.
+
+```{r}
+#| label: setup
+library(rstan)
+stopifnot("run from end-epi/slater" = file.exists("helpers.R"))
+if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("2_catalunya.qmd")$params   # running chunks interactively
+source("helpers.R")
+key = paste(params$areas, params$from, params$to, params$lag, sep = "_")
+```
+
+## Inputs
+
+Daily cases, the lagged case counts (lag `r params$lag`: equal weights on days 7-13, or a Poisson lag over
+1-14 days estimated), the neighbour pressure with weights 1/Ne(j), and the mobility pressure with
+trips of the 7 days up to each case day (lag 1) and of the 7 days before them (lag 2).
+
+```{r}
+#| label: inputs
+d = daily_inputs(params$areas, as.Date(params$from), as.Date(params$to))
+data_daily = list(n_areas = nrow(d$cases), n_days = ncol(d$cases), n_lags = N_LAGS, cases = d$cases,
+	lagged_cases = d$lagged_cases, neighbour_pressure = d$neighbour_pressure, mobility_pressure1 = d$mobility_pressure1,
+	mobility_pressure2 = d$mobility_pressure2, pop = d$pop, weekday = as.integer(format(d$dates, "%u")),
+	estimate_lag = as.integer(params$lag == "estimated"), fixed_lag_weight = LAG_WEIGHTS[[params$lag]])
+saveRDS(d, out(paste0("daily_", paste(params$areas, params$from, params$to, sep = "_"), "_inputs.rds")))
+c(areas = data_daily$n_areas, days = data_daily$n_days, cases = sum(d$cases))
+```
+
+## Fit
+
+Their sampler settings: 4 chains of 1000 iterations, the first 500 warm-up. The fit is saved and reused. With
+parallel chains the progress goes to `*_StanProgress.txt` in `tempdir()`, not to the console.
+
+```{r}
+#| label: fit
+thin = 1
+iter = thin * 1000
+warmup = round(iter * 0.5)
+chains = 4
+f = out(paste0("daily_", key, ".rds"))
+if (file.exists(f)) fit = readRDS(f) else {
+	stan_model = rstan::stan_model("stan/daily.stan")
+	fit = rstan::sampling(stan_model, data = data_daily, iter = iter, chains = 4, cores = chains, thin = thin,
+		warmup = warmup, refresh = 50)
+	saveRDS(fit, f)
+}
+```
+
+## Checks
+
+Convergence, PSIS-LOO and trips per new infection.
+
+```{r}
+#| label: checks
+loo_file = out(paste0("daily_", key, "_loo.rds"))        # PALMA fits: LOO computed by palma/convert.R
+report(fit, if (file.exists(loo_file)) readRDS(loo_file))
+rstan::summary(fit, pars = c(if (params$lag == "estimated") "lag_kappa", "weekday_effect"))$summary[, c("2.5%", "50%", "97.5%", "Rhat")]
+```
