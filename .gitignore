@@ -5,13 +5,8 @@ mobilityCovid/
 2_figures.html
 2_figures_files/
 .quarto/
-palma/
 stan/spacetime
 stan/*.rds
 *.knit.md
 *.html
 *_files/
-article_notes.md
-next_steps.md
-7_checks.qmd
-8_recovery.qmd
