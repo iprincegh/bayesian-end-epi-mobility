@@ -9,8 +9,7 @@ palma/
 stan/spacetime
 stan/*.rds
 *.knit.md
-5_spacetime_files/
-*_catalunya_*.html
-*_barcelona_*.html
+*.html
+*_files/
 article_notes.md
 next_steps.md
