@@ -198,11 +198,11 @@ extra_inputs = function(d) {
 # switches of stan/spacetime.stan and their defaults
 SWITCHES = list(time_effect = 0, vaccination = 0, testing = 0, pooled = 0, negbin = 0, rw_order = 1, gamma_prior = 0.5,
 	npi = 0, mob_closure = 0, lag_dist = 0, lag_min = 4, phi_area = 0, holiday = 0, no_within = 0, mob_lags = 2,
-	ne_powerlaw = 0, day_effect = 0, placebo = 0, no_mobility = 0, no_neighbour = 0, covariates = 0, save_expected = 0)
+	ne_powerlaw = 0, day_effect = 0, placebo = 0, no_mobility = 0, no_neighbour = 0, covariates = 0, split_within = 0, save_expected = 0)
 BASELINE = list(time_effect = 2, negbin = 1, gamma_prior = 0.2)
 # CV_REF: reference of the cross-validation rounds; MODEL: the final model
 CV_REF = modifyList(BASELINE, list(holiday = 1, phi_area = 1))
-MODEL = modifyList(CV_REF, list(pooled = 1, covariates = 1))
+MODEL = modifyList(CV_REF, list(pooled = 1, covariates = 1, day_effect = 2, split_within = 1, ne_powerlaw = 2))
 
 # static covariates: coefficient row (1 endemic, 2 autoregressive) and transformation
 COVARIATES = list(income_median = list(row = 1, f = log), pct_foreign = list(row = 1, f = identity),
@@ -215,14 +215,28 @@ abs_covariates = function(ids) {
 	scale(m)
 }
 
+# power-law neighbour inputs (ne_powerlaw = 2): the lag-weighted prevalence of each ABS and day, the pairs of ABS within
+# adjacency order 5 as a sparse matrix (rows destinations, columns origins) and each origin's count at each order
+powerlaw_inputs = function(d, zero = FALSE) {
+	a = readRDS(spain("outputs/catalunya/geometry/cat_abs_topology.rds"))$adjacency[d$ids, d$ids]
+	diag(a) = 0
+	o = igraph::distances(igraph::graph_from_adjacency_matrix((a > 0) * 1, mode = "undirected"))
+	o[o > 5 | o == 0] = 0
+	prev = Reduce(`+`, Map(`*`, d$lagged_cases, LAG_WEIGHTS$week)) / d$pop
+	nz = which(o > 0, arr.ind = TRUE)                     # [destination i, origin j], symmetric
+	list(ne_pl = 1L, pl_nnz = nrow(nz), pl_dest = unname(nz[, 1]), pl_orig = unname(nz[, 2]), pl_ord = as.integer(o[nz]),
+		pl_n_by_order = vapply(1:5, \(k) rowSums(o == k), numeric(length(d$ids))), pl_prev = if (zero) 0 * prev else prev)
+}
+
 # Stan data list of stan/spacetime.stan; holdout: ABS x day 0/1 matrix of held-out cells
 spacetime_data = function(d, switches, holdout = NULL) {
 	s = modifyList(SWITCHES, switches[intersect(names(switches), names(SWITCHES))])
 	stopifnot(s$mob_lags %in% 2:3, s$lag_min %in% seq_len(N_LAGS))
-	e = if (s$no_within || s$mob_lags == 3 || s$ne_powerlaw) extra_inputs(d)
+	stopifnot("split_within needs the within-ABS trips in the pressures" = !(s$split_within && s$no_within))
+	e = if (s$no_within || s$mob_lags == 3 || s$ne_powerlaw == 1 || s$split_within) extra_inputs(d)
 	mob = list(d$mobility_pressure1, d$mobility_pressure2, e$mobility_pressure3)[seq_len(s$mob_lags)]
 	if (s$no_within) mob = Map(\(m, w) Map(\(a, b) pmax(a - b, 0), m, w), mob, e$within[seq_len(s$mob_lags)])
-	ne = c(list(d$neighbour_pressure), if (s$ne_powerlaw) e$neighbour_orders)
+	ne = c(list(d$neighbour_pressure), if (s$ne_powerlaw == 1) e$neighbour_orders)
 	if (s$no_mobility) mob = lapply(mob, \(m) lapply(m, \(x) 0 * x))
 	if (s$no_neighbour) ne = lapply(ne, \(m) lapply(m, \(x) 0 * x))
 	if (s$placebo) {
@@ -237,7 +251,9 @@ spacetime_data = function(d, switches, holdout = NULL) {
 	if (is.null(holdout)) holdout = matrix(0L, nrow(d$cases), ncol(d$cases))
 	c(list(n_areas = nrow(d$cases), n_days = ncol(d$cases), cases = d$cases, n_lags = N_LAGS, n_orders = length(ne),
 			autoregressive_lags = columns(d$lagged_cases), neighbour_lags = stack(lapply(ne, columns)),
-			mobility_lags = stack(lapply(mob, columns)),
+			mobility_lags = stack(lapply(mob, columns)), split_within = as.integer(s$split_within),
+			within_lags = if (s$split_within) stack(lapply(e$within[seq_len(s$mob_lags)], \(m) columns(if (s$no_mobility) lapply(m, \(x) 0 * x) else m)))
+				else array(0, c(s$mob_lags, 0, if (s$lag_dist) N_LAGS else 1)),
 			pop = as.numeric(d$pop), weekday = as.integer(format(d$dates, "%u")), prior_scale = c(0.01, 2, 500, rep(2, s$mob_lags))),
 		lapply(s[c("time_effect", "vaccination", "testing", "pooled", "negbin", "phi_area", "rw_order", "npi", "mob_closure",
 			"lag_dist", "lag_min", "mob_lags", "holiday", "day_effect", "save_expected")], as.integer),
@@ -247,6 +263,9 @@ spacetime_data = function(d, switches, holdout = NULL) {
 			list(n_day_groups = max(g), day_group = g)),
 		if (s$covariates) list(n_cov = length(COVARIATES), covariate = unname(abs_covariates(d$ids)),
 			cov_row = array(vapply(COVARIATES, `[[`, 0, "row"))) else list(n_cov = 0L, covariate = matrix(0, nrow(d$cases), 0), cov_row = integer(0)),
+		if (s$ne_powerlaw == 2) {stopifnot(s$lag_dist == 0); powerlaw_inputs(d, zero = s$no_neighbour == 1)}
+			else list(ne_pl = 0L, pl_nnz = 0L, pl_dest = integer(0), pl_orig = integer(0), pl_ord = integer(0),
+				pl_n_by_order = matrix(0, 0, 5), pl_prev = matrix(0, 0, 0)),
 		list(gamma_prior = s$gamma_prior, n_blocks = ceiling(ncol(d$cases) / 7), day_block = ceiling(seq_len(ncol(d$cases)) / 7)),
 		week_knots(ncol(d$cases)), icar_graph(d$ids), holidays(d$dates),
 		list(vaccinated = vaccinated_share(d$ids, d$dates), log_tests = log_tests(d$ids, d$dates),
@@ -261,7 +280,7 @@ spacetime_variant = function(switches) with(modifyList(SWITCHES, switches[inters
 		if (npi) "_npi", if (mob_closure) "_mobclosure", if (negbin) "_negbin", c("", "_pooled", "_adaptive")[pooled + 1],
 		if (testing) c("_testing", "_testing2")[testing], if (vaccination) "_vaccination", if (lag_dist) paste0("_lagnb", lag_min),
 		if (phi_area) "_phiarea", if (holiday) "_holiday", if (no_within) "_nowithin", if (mob_lags == 3) "_mob3",
-		if (ne_powerlaw) "_powerlaw", if (day_effect) c("_dayeffect", "_dayprov")[day_effect], if (placebo) "_placebo",
+		if (ne_powerlaw) c("_powerlaw", "_pl")[ne_powerlaw], if (day_effect) c("_dayeffect", "_dayprov")[day_effect], if (placebo) "_placebo",
 		if (no_mobility) "_nomob", if (no_neighbour) "_none", if (covariates) "_cov", if (save_expected) "_ppc"))
 
 # cross-validation variant sets and the fold scheme of each

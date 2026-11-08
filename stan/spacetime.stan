@@ -38,6 +38,17 @@ functions {
 		for (o in 2:size(columns)) m += order_weight[o] * lagged(columns[o], lag_weight, n_areas, n_days);
 		return m;
 	}
+	// neighbour pressure with power-law weights o^-d over orders 1-5, normalised over all orders of each origin (Meyer
+	// and Held 2014): W prev, W[i, j] = o_ij^-d / norm_j for the pairs within order 5
+	matrix powerlaw_neighbours(matrix prev, real d, array[] int dest, array[] int orig, array[] int ord, matrix n_by_order) {
+		int n = rows(prev);
+		vector[5] ow;
+		for (o in 1:5) ow[o] = pow(o, -d);
+		vector[n] r = inv(n_by_order * ow);
+		matrix[n, n] w = rep_matrix(0, n, n);
+		for (k in 1:size(ord)) w[dest[k], orig[k]] = ow[ord[k]] * r[orig[k]];
+		return w * prev;
+	}
 	// expected cases by component: endemic, AR, NE, MOB
 	array[] matrix components(matrix coef, vector pop, matrix p, matrix ar, matrix ne, array[] matrix mob,
 			vector mob_factor) {
@@ -64,7 +75,17 @@ data {
 	// lagged pressures, rows = ABS-days (column-major area x day), columns = lags (lag_dist = 1) or one weighted column
 	matrix<lower=0>[n_areas * n_days, lag_dist ? n_lags : 1] autoregressive_lags;
 	array[n_orders] matrix<lower=0>[n_areas * n_days, lag_dist ? n_lags : 1] neighbour_lags;
+	int<lower=0, upper=1> ne_pl;
+	int<lower=0> pl_nnz;
+	array[pl_nnz] int<lower=1, upper=n_areas> pl_dest;
+	array[pl_nnz] int<lower=1, upper=n_areas> pl_orig;
+	array[pl_nnz] int<lower=1, upper=5> pl_ord;
+	matrix<lower=0>[ne_pl ? n_areas : 0, 5] pl_n_by_order;
+	matrix<lower=0>[ne_pl ? n_areas : 0, ne_pl ? n_days : 0] pl_prev;
 	array[mob_lags] matrix<lower=0>[n_areas * n_days, lag_dist ? n_lags : 1] mobility_lags;
+	int<lower=0, upper=1> split_within;
+	// the within-ABS part of each mobility pressure, for the split of the mobility channel
+	array[mob_lags] matrix<lower=0>[split_within ? n_areas * n_days : 0, lag_dist ? n_lags : 1] within_lags;
 	vector<lower=0>[n_areas] pop;
 	array[n_days] int<lower=1, upper=7> weekday;
 	vector<lower=0>[3 + mob_lags] prior_scale;
@@ -127,6 +148,7 @@ transformed data {
 	vector[n_blocks] block_n = rep_vector(0, n_blocks);
 	for (t in 1:n_days) block_n[day_block[t]] += 1;
 	if (phi_area && !negbin) reject("phi_area needs negbin");
+	if (ne_pl && (n_orders > 1 || lag_dist)) reject("ne_pl replaces n_orders > 1 and needs the fixed lag");
 	if (n_cov > 0 && pooled == 0) reject("covariates need pooled coefficients");
 	if (fixed) {
 		ar_fixed = to_matrix(autoregressive_lags[, 1], n_areas, n_days);
@@ -177,7 +199,7 @@ parameters {
 	array[mob_closure] real beta_mob_closure;
 	array[lag_dist] real<lower=0> lag_mean;
 	array[lag_dist] real<lower=0> lag_inv_sqrt_phi;
-	array[n_orders > 1] real<lower=0> ne_decay;
+	array[n_orders > 1 || ne_pl] real<lower=0> ne_decay;
 	vector[holiday ? 2 : 0] beta_holiday;
 	matrix[day_effect ? (day_effect == 2 ? n_day_groups : 1) : 0, n_days] day_z;
 	array[day_effect > 0] real<lower=0> day_sd;
@@ -237,7 +259,8 @@ model {
 		vector[n_days] report = weekday_effect[weekday];
 		array[4] matrix[n_areas, n_days] x;
 		matrix[n_areas, n_days] expected;
-		if (fixed) x = components(coef, pop, p, ar_fixed, ne_fixed, mob_fixed, mob_factor);
+		if (fixed) x = components(coef, pop, p, ar_fixed,
+			ne_pl ? powerlaw_neighbours(pl_prev, ne_decay[1], pl_dest, pl_orig, pl_ord, pl_n_by_order) : ne_fixed, mob_fixed, mob_factor);
 		else {
 			array[mob_lags] matrix[n_areas, n_days] mob;
 			for (d in 1:mob_lags) mob[d] = lagged(mobility_lags[d], lag_weight, n_areas, n_days);
@@ -326,6 +349,9 @@ generated quantities {
 	vector[n_days] mobility_day;
 	vector[n_days] expected_day;
 	vector[n_areas] mobility_area;
+	vector[split_within ? n_days : 0] mobility_within_day;
+	vector[ne_pl ? 5 : 0] pl_weight;
+	vector[split_within ? n_areas : 0] mobility_within_area;
 	vector[n_areas] infections_per_trip_area;
 	vector[n_days] infections_per_trip_day;
 	real infections_per_trip;
@@ -342,7 +368,8 @@ generated quantities {
 		row_vector[n_areas] ones = rep_row_vector(1, n_areas);
 		for (d in 1:mob_lags) mob[d] = lagged(mobility_lags[d], lag_weight, n_areas, n_days);
 		x = components(coef, pop, p, lagged(autoregressive_lags, lag_weight, n_areas, n_days),
-			neighbours(neighbour_lags, lag_weight, order_weight, n_areas, n_days), mob, mob_factor);
+			ne_pl ? powerlaw_neighbours(pl_prev, ne_decay[1], pl_dest, pl_orig, pl_ord, pl_n_by_order)
+				: neighbours(neighbour_lags, lag_weight, order_weight, n_areas, n_days), mob, mob_factor);
 		pressure = mob[1];
 		for (d in 2:mob_lags) pressure += mob[d];
 		if (testing == 2) expected = x[1] .* exp(beta_test[1] * log_tests)
@@ -361,6 +388,14 @@ generated quantities {
 		infections_per_trip_area = mobility_area ./ (pressure * rep_vector(1, n_days));
 		infections_per_trip_day = mobility_day ./ (ones * pressure)';
 		infections_per_trip = sum(x[4]) / sum(pressure);
+		if (ne_pl) for (o in 1:5) pl_weight[o] = pow(o, -ne_decay[1]);
+		if (split_within) {
+			matrix[n_areas, n_days] w = diag_pre_multiply(coef[4]', lagged(within_lags[1], lag_weight, n_areas, n_days));
+			for (d in 2:mob_lags) w += diag_pre_multiply(coef[3 + d]', lagged(within_lags[d], lag_weight, n_areas, n_days));
+			w = diag_post_multiply(w .* p, mob_factor);
+			mobility_within_day = (ones * w)';
+			mobility_within_area = w * rep_vector(1, n_days);
+		}
 		if (save_expected) expected_cell = expected;
 		for (i in 1:n_areas) for (t in 1:n_days)
 			log_lik[i, t] = negbin ? neg_binomial_2_lpmf(cases[i, t] | expected[i, t], phi[i])

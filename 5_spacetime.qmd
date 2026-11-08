@@ -24,9 +24,10 @@ params:
   holiday: 1
   no_within: 0
   mob_lags: 2
-  ne_powerlaw: 0
-  day_effect: 0
+  ne_powerlaw: 2
+  day_effect: 2
   covariates: 1
+  split_within: 1
   placebo: 0
   no_mobility: 0
   no_neighbour: 0
@@ -41,10 +42,11 @@ execute:
 
 $$Y_{i,t} \sim \mathrm{NB}(\mu_{i,t}, \psi_i), \qquad
 \mu_{i,t} = r_t \Big[ \alpha^{\mathrm{EN}}_i N_i + p_{i,t} \Big( \alpha^{\mathrm{AR}}_i \sum_s u_s Y_{i,t-s}
- + \alpha^{\mathrm{NE}}_i N_i \sum_s u_s \sum_{j \sim i} \frac{Y_{j,t-s}}{\mathrm{Ne}_j N_j}
- + \sum_{d=1}^2 \alpha^{\mathrm{MOB}}_{d,i} \sum_s u_s \sum_j F^{(d)}_{ji}(t-s) \frac{Y_{j,t-s}}{N_j} \Big) \Big]$$
+ + \alpha^{\mathrm{NE}}_i N_i \sum_s u_s \sum_{j: o_{ji} \le 5} w_{ji}(d) \frac{Y_{j,t-s}}{N_j}
+ + \sum_{m=1}^2 \alpha^{\mathrm{MOB}}_{m,i} \sum_s u_s \sum_j F^{(m)}_{ji}(t-s) \frac{Y_{j,t-s}}{N_j} \Big) \Big]$$
 
-with $u_s = 1/7$ on days 7 to 13; trips $F^{(1)}$ of the 7 days up to each lagged case day and $F^{(2)}$ of the 7 days
+with $u_s = 1/7$ on days 7 to 13; power-law neighbour weights $w_{ji}(d) = o_{ji}^{-d} / \sum_{k} o_{jk}^{-d}$ over
+adjacency orders 1 to 5 (Meyer and Held 2014); trips $F^{(1)}$ of the 7 days up to each lagged case day and $F^{(2)}$ of the 7 days
 before; $p_{i,t} = \exp(\gamma_t + \delta_{i,t})$, a weekly RW1 plus a type IV ABS x week interaction, interpolated to
 days; $r_t$ the weekday and holiday reporting factors; $\log \alpha_{k,i} = \mu_k + \beta_k^\top x_i + \sigma_k z_{k,i}$
 with the static covariates of `COVARIATES` on the endemic and autoregressive coefficients; one size $\psi_i$ per ABS.
@@ -55,8 +57,8 @@ section reads every variant fitted for the same ABS and days, with the constant 
 ```
 quarto render 5_spacetime.qmd                                   # the final model, Barcelona
 quarto render 5_spacetime.qmd -P covariates:0 -P pooled:0       # without the random effects (CV_REF)
-quarto render 5_spacetime.qmd -P day_effect:1                   # daily reporting shock shared by all ABS
-quarto render 5_spacetime.qmd -P ne_powerlaw:1                  # power-law neighbourhood, orders 1-5
+quarto render 5_spacetime.qmd -P day_effect:0                   # without the daily reporting shock
+quarto render 5_spacetime.qmd -P ne_powerlaw:0                  # first-order neighbours, 1/Ne(j)
 quarto render 5_spacetime.qmd -P no_mobility:1                  # no trip term (geography only, with ne_powerlaw:1)
 quarto render 5_spacetime.qmd -P placebo:1                      # negative control: permuted mobility pressures
 ```
@@ -146,11 +148,12 @@ if (params$lag_dist) print(cbind(bands(rstan::extract(fit, "lag_weight")[[1]]), 
 	ggplot(aes(lag)) + geom_col(aes(y = mid), fill = "grey70") + geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.3) +
 	geom_point(data = data.frame(lag = seq_len(N_LAGS), w = LAG_WEIGHTS$week), aes(y = w), colour = "red") +
 	labs(x = "Lag of the cases (days)", y = "Weight (red: fixed one-week lag)"))
-if (params$ne_powerlaw) print(bands(rstan::extract(fit, "order_weight")[[1]]) |> cbind(order = 1:5) |> round(3))
+if (params$ne_powerlaw == 1) print(bands(rstan::extract(fit, "order_weight")[[1]]) |> cbind(order = 1:5) |> round(3))
+if (params$ne_powerlaw == 2) print(rbind(d = bands(matrix(rstan::extract(fit, "ne_decay")[[1]])), cbind(bands(rstan::extract(fit, "pl_weight")[[1]]))) |> round(3))
 if (params$phi_area) print(summary(apply(rstan::extract(fit, "phi")[[1]], 2, median)))
 if (params$holiday) print(exp(bands(rstan::extract(fit, "beta_holiday")[[1]])) |> `rownames<-`(c("holiday", "day after")) |> round(3))
 if (params$covariates) print(exp(bands(rstan::extract(fit, "beta_cov")[[1]])) |> `rownames<-`(names(COVARIATES)) |> round(3))
-if (params$day_effect == 1) print(cbind(exp(bands(rstan::extract(fit, "day_log")[[1]][, 1, ])), date = d$dates) |>
+if (params$day_effect > 0) print(cbind(exp(bands(rstan::extract(fit, "day_log")[[1]][, 1, ])), date = d$dates) |>
 	ggplot(aes(date)) + geom_hline(yintercept = 1, lty = 2) + geom_linerange(aes(ymin = lo, ymax = hi), colour = "grey60") +
 	geom_point(aes(y = mid), size = 0.8) + scale_y_log10() + labs(x = NULL, y = "Daily reporting factor"))
 ```
@@ -257,6 +260,25 @@ if (params$time_effect >= 1) {
 		geom_hline(yintercept = 1, lty = 2) +
 		labs(x = NULL, y = expression(exp(gamma[t])))
 }
+```
+
+## Shares of the expected cases by channel
+
+Each channel's share of the sum of the four components (before the reporting factors), median and 95% interval. The
+mobility channel splits into movement within an ABS and trips between ABS; the two between-area channels are also
+shown together, with the posterior correlation of their shares.
+
+```{r}
+#| label: shares
+x = rstan::extract(fit, c("endemic_day", "autoregressive_day", "neighbour_day", "mobility_day", "mobility_within_day"))
+total = rowSums(x$endemic_day + x$autoregressive_day + x$neighbour_day + x$mobility_day)
+share = cbind(endemic = rowSums(x$endemic_day), autoregressive = rowSums(x$autoregressive_day),
+	neighbour = rowSums(x$neighbour_day), mobility = rowSums(x$mobility_day)) / total
+if (params$split_within) share = cbind(share, mobility_within = rowSums(x$mobility_within_day) / total,
+	mobility_between = (rowSums(x$mobility_day) - rowSums(x$mobility_within_day)) / total)
+share = cbind(share, between_areas = share[, "neighbour"] + (if (params$split_within) share[, "mobility_between"] else share[, "mobility"]))
+round(t(apply(share, 2, quantile, c(0.025, 0.5, 0.975))), 3)
+c(correlation_neighbour_mobility = cor(share[, "neighbour"], share[, "mobility"]))
 ```
 
 ## Trips per new infection over time
