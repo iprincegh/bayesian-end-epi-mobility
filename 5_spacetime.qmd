@@ -64,8 +64,7 @@ quarto render 5_spacetime.qmd -P placebo:1                      # negative contr
 For Catalunya, fit on PALMA (`palma/prepare_spacetime.R`, then `fit.sbatch`) and render with
 `-P areas:catalunya -P from:2020-03-22 -P to:2021-05-01 -P iter:2000`.
 
-Week-block cross-validation of the refinements: `6_cv.qmd`. Posterior predictive checks: `7_checks.qmd`. Fake-data
-recovery: `8_recovery.qmd`.
+Cross-validation of the variants: `6_cv.qmd`.
 
 ```{r}
 #| label: setup
