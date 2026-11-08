@@ -1,6 +1,11 @@
 ---
 title: "Figures: daily replication of Slater et al. (2025)"
-format: html
+format:
+  html:
+    toc: true
+    embed-resources: true
+    code-fold: true          # code hidden, a toggle per chunk
+    code-tools: true         # and one to show or hide all
 params:
   areas: catalunya
   from: "2020-03-22"
