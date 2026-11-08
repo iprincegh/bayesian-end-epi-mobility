@@ -1,27 +1,46 @@
-# Endemic-epidemic space-time model of daily COVID-19 cases by ABS, Catalunya
+# Bayesian endemic-epidemic model with mobility: replication of Slater et al. (2025) for Catalunya
 
-Built from the model of Slater, Brown, Rosenthal and Mateu (2025), *Leveraging cellphone-derived mobility networks to
-assess COVID-19 travel risk*, AOAS 19(1), 56-74. Their code and data: `mobilityCovid/` (clone of
-github.com/JustinJSlater/mobilityCovid, 4364ecc).
+A daily replication of model 1 of Slater et al. (2025), an endemic-epidemic model with an exogenous, an
+autoregressive, a neighbourhood and a mobility component, fitted in Stan to the 374 basic health areas (ABS) of
+Catalunya from 2020-03-22 to 2021-05-01, and to the 67 ABS of Barcelona city.
 
-Render from this folder; Spain-data is expected at `../Spain-data`.
+**Results:** [summary of the Catalunya fit](https://iprincegh.github.io/bayesian-end-epi-mobility/4_results.html) ·
+[all figures](https://iprincegh.github.io/bayesian-end-epi-mobility/3_figures.html)
 
-| File | What it does | Output |
-|---|---|---|
-| `0_reproduce.qmd` | `stan/weekly.stan` (their model 1 in our names) on their Castilla-León data | `outputs/reproduce_castilla.rds` |
-| `1_barcelona.qmd` | `stan/daily.stan`, the replication on daily cases of the 67 Barcelona city ABS | `outputs/daily_barcelona_<from>_<to>_<lag>.rds` |
-| `2_catalunya.qmd` | the same for all 374 ABS, 2020-03-22 to 2021-05-01 | `outputs/daily_catalunya_2020-03-22_2021-05-01_<lag>.rds` |
-| `3_figures.qmd`, `4_results.qmd` | their figures and a summary of the replication fit | rendered html |
-| `5_spacetime.qmd` | `stan/spacetime.stan`, the final model (`MODEL` in `helpers.R`) or one variant of it | `outputs/spacetime_<areas>_<from>_<to>_<variant>.rds` and `_loo.rds` |
-| `6_cv.qmd` | cross-validation of a set of variants (`CV_SETS`): whole weeks held out, or a random share of the ABS of each day | `outputs/cv/` |
-| `7_checks.qmd` | PIT histograms and posterior predictive checks of one fit | rendered html |
-| `8_recovery.qmd` | fake-data recovery of the main quantities | `outputs/recovery/` |
+## Run
 
-The final model: daily negative binomial counts with a size per ABS; an endemic term proportional to population; an
-epidemic part of autoregressive, first-order neighbour and mobility terms (trip-weighted prevalence at the origins, two
-7-day trip windows), lagged 7 to 13 days and scaled by a weekly transmission factor (common RW1 plus a type IV ABS x
-week interaction); weekday and holiday reporting factors; ABS coefficients as random effects with static covariates.
+Render the notebooks from this folder, in order: `1_barcelona.qmd`, `2_catalunya.qmd`, `3_figures.qmd`,
+`4_results.qmd`. They expect the data repository below at `../Spain-data`. `0_reproduce.qmd` refits the original
+Castilla-León model and needs Slater's repository cloned into `mobilityCovid/`.
 
-`helpers.R` builds the inputs from Spain-data (cases, lagged pressures, trips, holidays, covariates), holds the switches
-of `stan/spacetime.stan` (`SWITCHES`), the final model (`MODEL`) and the cross-validation sets. Large fits run on PALMA
-with the scripts in `palma/`, which are not part of the repository.
+## Space-time model (this branch, in progress)
+
+An extension of the replicated model, fitted with `stan/spacetime.stan`: daily negative binomial counts with a size
+per ABS; an endemic term proportional to population; an epidemic part of autoregressive, first-order neighbour and
+mobility terms (trip-weighted prevalence at the origins, two 7-day trip windows), lagged 7 to 13 days and scaled by a
+weekly transmission factor (common RW1 plus a type IV ABS x week interaction); weekday and holiday reporting factors;
+ABS coefficients as random effects with static covariates. The final model is `MODEL` in `helpers.R`.
+
+| Notebook | What it does |
+|---|---|
+| `5_spacetime.qmd` | fits the final model, or one variant of it (switches as `SWITCHES` in `helpers.R`) |
+| `6_cv.qmd` | cross-validation of a set of variants (`CV_SETS`): whole weeks held out, or a random share of the ABS of each day |
+| `7_checks.qmd` | PIT histograms and posterior predictive checks of one fit |
+| `8_recovery.qmd` | fake-data recovery of the main quantities |
+
+Results of this model are not published yet.
+
+## Data
+
+- Daily cases and populations per ABS: the panel of the
+  [covid19-mobility-healthzones v1.0 release](https://github.com/iprincegh/covid19-mobility-healthzones/releases/tag/v1.0).
+- Daily trips between ABS: Niraula, P., & Oppong Boakye, P. (2026). *Mobility data from MITMA, Spain reprojected at
+  Zona Básica de Salud (ZBS) level for Madrid and Àrea Bàsica de Salut (ABS) for Catalunya* (Version 1.0) [Data set].
+  Zenodo. [doi:10.5281/zenodo.23737062](https://doi.org/10.5281/zenodo.23737062)
+
+## Method
+
+Slater, J. J., Brown, P. E., Rosenthal, J. S., & Mateu, J. (2025). Leveraging cellphone-derived mobility networks to
+assess COVID-19 travel risk. *The Annals of Applied Statistics*, 19(1), 56–74.
+[doi:10.1214/24-AOAS1914](https://doi.org/10.1214/24-AOAS1914). Their code:
+[JustinJSlater/mobilityCovid](https://github.com/JustinJSlater/mobilityCovid) (not included here).
