@@ -54,7 +54,7 @@ f = out(paste0("daily_", key, ".rds"))
 if (file.exists(f)) fit = readRDS(f) else {
 	stan_model = rstan::stan_model("stan/daily.stan")
 	fit = rstan::sampling(stan_model, data = data_daily, iter = iter, chains = 4, cores = chains, thin = thin,
-		warmup = warmup, refresh = 50)
+		warmup = warmup, refresh = 50, open_progress = FALSE)
 	saveRDS(fit, f)
 }
 ```

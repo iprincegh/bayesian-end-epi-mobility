@@ -111,7 +111,7 @@ f = out(paste0("spacetime_", key, ".rds"))
 f_loo = out(paste0("spacetime_", key, "_loo.rds"))
 if (file.exists(f)) fit = readRDS(f) else {
 	fit = rstan::sampling(rstan::stan_model("stan/spacetime.stan"), data = data_st, iter = params$iter,
-		warmup = params$iter / 2, chains = 4, cores = 4, refresh = 50)
+		warmup = params$iter / 2, chains = 4, cores = 4, refresh = 50, open_progress = FALSE)
 	saveRDS(fit, f)
 }
 if (!file.exists(f_loo)) saveRDS(loo::loo(loo::extract_log_lik(fit)), f_loo)

@@ -62,7 +62,7 @@ for (v in names(variants)) for (k in seq_len(params$K)) {
 	if (!fit_now || file.exists(fold_file(v, k))) next
 	holdout = cv_holdout(scheme, nrow(d$cases), ncol(d$cases), k, params$K)
 	fit = rstan::sampling(model, data = spacetime_data(d, variants[[v]], holdout), iter = 1000, warmup = 500, chains = 4,
-		cores = 4, refresh = 0, pars = "log_lik")
+		cores = 4, refresh = 0, pars = "log_lik", open_progress = FALSE)
 	held = which(holdout == 1)
 	ll = matrix(rstan::extract(fit, "log_lik")[[1]], ncol = length(d$cases))[, held]
 	saveRDS(list(cell = held, elpd = lpd(ll), divergent = rstan::get_num_divergent(fit),
