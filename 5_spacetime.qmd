@@ -1,0 +1,274 @@
+---
+title: "Endemic-epidemic space-time model of daily cases by ABS"
+format:
+  html:
+    embed-resources: true    # figures inside each report, so reports of different variants do not share image files
+params:
+  areas: barcelona
+  from: "2020-09-01"
+  to: "2020-12-31"
+  time_effect: 2      # defaults: the final model, MODEL in helpers.R
+  negbin: 1
+  pooled: 1           # ABS coefficients as iid random effects (Paul and Held 2011); 2: adaptive Leroux CAR
+  testing: 0          # 1: whole mean (Slater eq. 5); 2: pi_t on endemic, pi_t / pi_t-s on epidemic
+  vaccination: 0
+  rw_order: 1
+  gamma_prior: 0.2
+  npi: 0
+  mob_closure: 0
+  lag_dist: 0         # the other switches: variants tested against it
+  lag_min: 4
+  phi_area: 1
+  holiday: 1
+  no_within: 0
+  mob_lags: 2
+  ne_powerlaw: 0
+  day_effect: 0
+  covariates: 1       # static ABS covariates in the pooled means (needs pooled 1 or 2; COVARIATES in helpers.R)
+  placebo: 0          # negative control: each ABS gets another ABS's mobility pressures
+  no_mobility: 0      # coupling comparison: no trip term
+  no_neighbour: 0     # coupling comparison: no neighbour term
+  save_expected: 0
+  iter: 1000          # iterations per chain, half warm-up (theirs: 1000); other values get their own fit file
+execute:
+  warning: false
+  message: false
+---
+
+`stan/spacetime.stan` with the switches of `SWITCHES` in `helpers.R`. The defaults are the final model (`MODEL`):
+
+$$Y_{i,t} \sim \mathrm{NB}(\mu_{i,t}, \psi_i), \qquad
+\mu_{i,t} = r_t \Big[ \alpha^{\mathrm{EN}}_i N_i + p_{i,t} \Big( \alpha^{\mathrm{AR}}_i \sum_s u_s Y_{i,t-s}
+ + \alpha^{\mathrm{NE}}_i N_i \sum_s u_s \sum_{j \sim i} \frac{Y_{j,t-s}}{\mathrm{Ne}_j N_j}
+ + \sum_{d=1}^2 \alpha^{\mathrm{MOB}}_{d,i} \sum_s u_s \sum_j F^{(d)}_{ji}(t-s) \frac{Y_{j,t-s}}{N_j} \Big) \Big]$$
+
+with $u_s = 1/7$ on days 7 to 13; trips $F^{(1)}$ of the 7 days up to each lagged case day and $F^{(2)}$ of the 7 days
+before; $p_{i,t} = \exp(\gamma_t + \delta_{i,t})$, a weekly RW1 plus a type IV ABS x week interaction, interpolated to
+days; $r_t$ the weekday and holiday reporting factors; $\log \alpha_{k,i} = \mu_k + \beta_k^\top x_i + \sigma_k z_{k,i}$
+with the static covariates of `COVARIATES` on the endemic and autoregressive coefficients; one size $\psi_i$ per ABS.
+Each render fits one variant; the comparison
+section reads every variant fitted for the same ABS and days, with the constant model of `1_barcelona.qmd` or
+`2_catalunya.qmd`. Render from `end-epi/slater`, e.g.
+
+```
+quarto render 5_spacetime.qmd                                   # the final model, Barcelona
+quarto render 5_spacetime.qmd -P covariates:0 -P pooled:0       # without the random effects (CV_REF)
+quarto render 5_spacetime.qmd -P day_effect:1                   # daily reporting shock shared by all ABS
+quarto render 5_spacetime.qmd -P ne_powerlaw:1                  # power-law neighbourhood, orders 1-5
+quarto render 5_spacetime.qmd -P no_mobility:1                  # no trip term (geography only, with ne_powerlaw:1)
+quarto render 5_spacetime.qmd -P placebo:1                      # negative control: permuted mobility pressures
+```
+
+For Catalunya, fit on PALMA (`palma/prepare_spacetime.R`, then `fit.sbatch`) and render with
+`-P areas:catalunya -P from:2020-03-22 -P to:2021-05-01 -P iter:2000`.
+
+Week-block cross-validation of the refinements: `6_cv.qmd`. Posterior predictive checks: `7_checks.qmd`. Fake-data
+recovery: `8_recovery.qmd`.
+
+```{r}
+#| label: setup
+suppressMessages({library(rstan); library(ggplot2)})
+stopifnot("run from end-epi/slater" = file.exists("helpers.R"))
+if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("5_spacetime.qmd")$params   # running chunks interactively
+source("helpers.R")
+window_key = paste(params$areas, params$from, params$to, sep = "_")
+variant = paste0(spacetime_variant(params), if (params$iter != 1000) paste0("_iter", params$iter))
+key = paste(window_key, variant, sep = "_")
+theme_set(theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank(), legend.position = "top"))
+bands = \(x) data.frame(t(apply(x, 2, quantile, c(0.025, 0.5, 0.975)))) |> setNames(c("lo", "mid", "hi"))
+smooth7 = \(v) as.numeric(stats::filter(v, rep(1 / 7, 7), sides = 2))
+variant
+```
+
+## Inputs
+
+The inputs of the constant model (reused if saved), with the lag-weighted sums formed here (equal weights on days
+7-13), the weekly knots, the queen adjacency for the interaction, the share with a first dose 14 days earlier, and
+the province tests.
+
+```{r}
+#| label: inputs
+f_inputs = out(paste0("daily_", window_key, "_inputs.rds"))
+d = if (file.exists(f_inputs)) readRDS(f_inputs) else daily_inputs(params$areas, as.Date(params$from), as.Date(params$to))
+if (!file.exists(f_inputs)) saveRDS(d, f_inputs)
+data_st = spacetime_data(d, params)
+c(areas = data_st$n_areas, days = data_st$n_days, weeks = data_st$n_weeks, edges = data_st$n_edges,
+	icar_scale = data_st$icar_scale, max_vaccinated = max(data_st$vaccinated), min_log_tests = min(data_st$log_tests))
+```
+
+## Fit
+
+Their sampler settings by default: 4 chains of 1000 iterations, the first 500 warm-up (`iter` sets longer chains,
+half warm-up, saved as a separate fit). The fit and its PSIS-LOO are saved and reused. For Catalunya, fit on PALMA instead (`palma/prepare_spacetime.R`, then `fit.sbatch` with
+`KEY=spacetime_<areas>_<from>_<to>_<variant>`); `palma/fetch.sh` writes the two files this chunk reads.
+
+```{r}
+#| label: fit
+f = out(paste0("spacetime_", key, ".rds"))
+f_loo = out(paste0("spacetime_", key, "_loo.rds"))
+if (file.exists(f)) fit = readRDS(f) else {
+	fit = rstan::sampling(rstan::stan_model("stan/spacetime.stan"), data = data_st, iter = params$iter,
+		warmup = params$iter / 2, chains = 4, cores = 4, refresh = 50)
+	saveRDS(fit, f)
+}
+if (!file.exists(f_loo)) saveRDS(loo::loo(loo::extract_log_lik(fit)), f_loo)
+```
+
+## Checks
+
+Convergence over the ABS coefficients and the time effects, PSIS-LOO, trips per new infection and the
+hyperparameters.
+
+```{r}
+#| label: checks
+hyper = c("gamma_sd", "delta_sd", "tau", "beta_test", "inv_sqrt_phi", "coef_mu", "coef_sd", "coef_lambda", "coef_s_sd",
+	"coef_s_lambda", "logit_c0", "c_sd", "c_lambda", "delta_s_sd", "delta_s_lambda", "beta_npi", "beta_mob_closure",
+	"lag_mean", "lag_inv_sqrt_phi", "ne_decay", "log_phi_mu", "log_phi_sd", "beta_holiday", "day_sd", "beta_cov")
+hyper = hyper[vapply(hyper, \(p) p %in% names(fit@par_dims) && prod(fit@par_dims[[p]]) > 0, logical(1))]   # of this variant
+report(fit, readRDS(f_loo), pars = c("coef", "weekday_effect", if (params$time_effect >= 1) "gamma",
+	if (params$time_effect >= 2) "delta", if (params$pooled == 2) "coef_log_s",
+	if (params$time_effect == 3) c("c_area", "delta_log_s"), if (params$phi_area) "phi_z", hyper))
+if (length(hyper)) rstan::summary(fit, pars = hyper)$summary[, c("2.5%", "50%", "97.5%", "n_eff", "Rhat")]
+```
+
+## Refinements
+
+With `lag_dist = 1`: the estimated weights of the case lags (days), against the fixed equal weights on days 7-13;
+with `ne_powerlaw = 1`: the weights of the adjacency orders; with `phi_area = 1`: the sizes phi_i (smaller is more
+variable); with `holiday = 1`: the reporting factors on a holiday and the day after; with `day_effect = 1`: the daily
+reporting factors exp(e_t).
+
+```{r}
+#| label: refinements
+#| fig-height: 3.5
+if (params$lag_dist) print(cbind(bands(rstan::extract(fit, "lag_weight")[[1]]), lag = seq_len(N_LAGS)) |>
+	ggplot(aes(lag)) + geom_col(aes(y = mid), fill = "grey70") + geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.3) +
+	geom_point(data = data.frame(lag = seq_len(N_LAGS), w = LAG_WEIGHTS$week), aes(y = w), colour = "red") +
+	labs(x = "Lag of the cases (days)", y = "Weight (red: fixed one-week lag)"))
+if (params$ne_powerlaw) print(bands(rstan::extract(fit, "order_weight")[[1]]) |> cbind(order = 1:5) |> round(3))
+if (params$phi_area) print(summary(apply(rstan::extract(fit, "phi")[[1]], 2, median)))
+if (params$holiday) print(exp(bands(rstan::extract(fit, "beta_holiday")[[1]])) |> `rownames<-`(c("holiday", "day after")) |> round(3))
+if (params$covariates) print(exp(bands(rstan::extract(fit, "beta_cov")[[1]])) |> `rownames<-`(names(COVARIATES)) |> round(3))
+if (params$day_effect == 1) print(cbind(exp(bands(rstan::extract(fit, "day_log")[[1]][, 1, ])), date = d$dates) |>
+	ggplot(aes(date)) + geom_hline(yintercept = 1, lty = 2) + geom_linerange(aes(ymin = lo, ymax = hi), colour = "grey60") +
+	geom_point(aes(y = mid), size = 0.8) + scale_y_log10() + labs(x = NULL, y = "Daily reporting factor"))
+```
+
+## Restrictions
+
+With `npi = 1`: the factor exp(beta) on p (all routes) with each restriction in force for the whole window t-10..t-4;
+with `mob_closure = 1`: the extra factor on the mobility term alone during the bar and restaurant closure. A factor
+below 1 is lower expected cases with the restriction in force, given the time effect; it is an association.
+
+```{r}
+#| label: restrictions
+npi_names = colnames(restriction_share(d$dates))[data_st$npi_index]
+effects = rbind(
+	if (params$npi) setNames(data.frame(t(apply(exp(rstan::extract(fit, "beta_npi")[[1]]), 2, quantile, c(0.025, 0.5, 0.975)))),
+		c("lo", "mid", "hi")) |> cbind(term = paste("p:", npi_names)),
+	if (params$mob_closure) setNames(data.frame(t(quantile(exp(rstan::extract(fit, "beta_mob_closure")[[1]]), c(0.025, 0.5, 0.975)))),
+		c("lo", "mid", "hi")) |> cbind(term = "mobility only: closure"))
+if (!is.null(effects)) effects
+```
+
+## Adaptive parameters
+
+For the adaptive variants, the spread of the ABS-specific parameters: the scales s_i of the coefficients
+(`pooled = 2`), and the temporal dependence c_i and scales s_i of the interaction (`time_effect = 3`). The adaptive
+layer is not supported if the spread hyperparameters (`coef_s_sd`, `delta_s_sd`, `c_sd` above) sit near zero, or if
+the ABS values have intervals about as wide as their priors.
+
+```{r}
+#| label: adaptive
+adaptive = list(coefficient_scale = if (params$pooled == 2) exp(rstan::extract(fit, "coef_log_s")[[1]]),
+	interaction_dependence = if (params$time_effect == 3) rstan::extract(fit, "c_area")[[1]],
+	interaction_scale = if (params$time_effect == 3) exp(rstan::extract(fit, "delta_log_s")[[1]]))
+adaptive = Filter(Negate(is.null), adaptive)
+if (length(adaptive)) t(sapply(adaptive, \(x) {
+	m = apply(x, 2, median)
+	c(min = min(m), q25 = unname(quantile(m, 0.25)), median = median(m), q75 = unname(quantile(m, 0.75)), max = max(m),
+		mean_ci_width = mean(apply(x, 2, \(v) diff(quantile(v, c(0.025, 0.975))))))
+}))
+```
+
+## Comparison with the constant model
+
+PSIS-LOO on the same ABS-days for the constant model (their model 1, daily) and every variant fitted so far.
+
+```{r}
+#| label: compare
+f_base = out(paste0("daily_", window_key, "_week.rds"))
+f_base_loo = out(paste0("daily_", window_key, "_week_loo.rds"))
+if (!file.exists(f_base_loo)) saveRDS(loo::loo(loo::extract_log_lik(readRDS(f_base))), f_base_loo)
+f_variants = list.files("outputs", paste0("^spacetime_", window_key, "_time.*_loo\\.rds$"), full.names = TRUE)
+loos = c(list(constant = readRDS(f_base_loo)),
+	setNames(lapply(f_variants, readRDS), sub(paste0("^spacetime_", window_key, "_(.*)_loo\\.rds$"), "\\1", basename(f_variants))))
+loo::loo_compare(loos)
+```
+
+## Does the fit still trail the waves?
+
+The constant model's expected cases trail the observed ones. Correlation of the 7-day means of observed and expected
+cases, with the expected series shifted by k days (k > 0: expected cases trail observed cases by k days).
+
+```{r}
+#| label: lag
+observed = colSums(d$cases)
+base = rstan::extract(readRDS(f_base))
+weekday = as.integer(format(d$dates, "%u"))
+expected = list(constant = with(base, (endemic_day + autoregressive_day + neighbour_day + mobility_day) * weekday_effect[, weekday]),
+	extended = rstan::extract(fit, "expected_day")[[1]]) |> lapply(\(x) apply(x, 2, median))
+shift_cor = function(e, k) {
+	o = smooth7(observed); e = smooth7(e)
+	i = max(1, 1 - k):min(length(o), length(o) - k)
+	cor(o[i], e[i + k], use = "complete.obs")
+}
+shifts = -14:14
+cors = sapply(expected, \(e) sapply(shifts, \(k) shift_cor(e, k)))
+rbind(best_shift = shifts[apply(cors, 2, which.max)], cor_at_best = apply(cors, 2, max), cor_at_0 = cors[shifts == 0, ])
+```
+
+```{r}
+#| label: lag-figure
+#| fig-height: 4
+rbind(data.frame(date = d$dates, cases = smooth7(observed), series = "Observed"),
+	data.frame(date = d$dates, cases = smooth7(expected$constant), series = "Constant model"),
+	data.frame(date = d$dates, cases = smooth7(expected$extended), series = variant)) |>
+	ggplot(aes(date, cases, colour = series)) +
+	geom_line() +
+	scale_colour_manual(values = setNames(c("black", "grey55", "red"), c("Observed", "Constant model", variant))) +
+	labs(x = NULL, y = "Cases a day (7-day mean)", colour = NULL)
+```
+
+## Per-contact probability over time
+
+The common weekly factor exp(gamma_t) on the epidemic part, relative to the geometric mean over weeks.
+
+```{r}
+#| label: transmission
+#| fig-height: 4
+if (params$time_effect >= 1) {
+	gamma = rstan::extract(fit, "gamma")[[1]]
+	cbind(bands(exp(gamma)), date = d$dates[pmin(7 * seq_len(ncol(gamma)) - 3, length(d$dates))]) |>
+		ggplot(aes(date)) +
+		geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.3) +
+		geom_line(aes(y = mid)) +
+		geom_hline(yintercept = 1, lty = 2) +
+		labs(x = NULL, y = expression(exp(gamma[t])))
+}
+```
+
+## Trips per new infection over time
+
+With a time effect this changes through p, which is shared by the autoregressive, neighbourhood and mobility terms.
+It follows overall transmissibility, not a risk specific to trips.
+
+```{r}
+#| label: trips
+#| fig-height: 4
+cbind(bands(1 / rstan::extract(fit, "infections_per_trip_day")[[1]]), date = d$dates) |>
+	ggplot(aes(date)) +
+	geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.3) +
+	geom_line(aes(y = mid)) +
+	labs(x = NULL, y = "Infected trips per new infection")
+```

@@ -1,0 +1,153 @@
+---
+title: "Posterior predictive checks of the space-time model"
+format:
+  html:
+    embed-resources: true
+params:
+  areas: barcelona
+  from: "2020-09-01"
+  to: "2020-12-31"
+  time_effect: 2      # defaults: the final model, MODEL in helpers.R; the other switches as 5_spacetime.qmd
+  negbin: 1
+  gamma_prior: 0.2
+  lag_dist: 0
+  lag_min: 4
+  pooled: 1
+  phi_area: 1
+  holiday: 1
+  testing: 0          # 1: whole mean (Slater eq. 5); 2: pi_t on endemic, pi_t / pi_t-s on epidemic
+  no_within: 0
+  mob_lags: 2
+  ne_powerlaw: 0
+  day_effect: 0
+  placebo: 0
+  covariates: 1
+  iter: 1000
+  n_draws: 200        # posterior draws used for the checks
+execute:
+  warning: false
+  message: false
+---
+
+Checks of the fit beyond PSIS-LOO and cross-validation, for one variant of `stan/spacetime.stan`: does the predictive
+distribution of each ABS-day match the observed count? The checks need the expected cases of each ABS-day, from one of:
+
+- `outputs/spacetime_<key>_expected.rds`, computed on PALMA from the draws of a finished fit (`palma/gq.sbatch`; for
+  Catalunya, where refitting takes a day);
+- a fit that saves them (`save_expected = 1`, variant suffix `_ppc`), fitted here if missing (Barcelona, about 15
+  minutes).
+
+Render from `end-epi/slater`, with the same switches as `5_spacetime.qmd`, e.g. `quarto render 7_checks.qmd -P phi_area:1`,
+or for the Catalunya fit `-P areas:catalunya -P from:2020-03-22 -P to:2021-05-01 -P gamma_prior:0.5 -P iter:2000`.
+
+```{r}
+#| label: setup
+suppressMessages({library(rstan); library(ggplot2)})
+stopifnot("run from end-epi/slater" = file.exists("helpers.R"))
+if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("7_checks.qmd")$params   # running chunks interactively
+source("helpers.R")
+switches = modifyList(params, list(save_expected = 1))
+window_key = paste(params$areas, params$from, params$to, sep = "_")
+iter = if (params$iter != 1000) paste0("_iter", params$iter)
+f_expected = out(paste0("spacetime_", window_key, "_", spacetime_variant(params), iter, "_expected.rds"))   # from PALMA
+key = paste(window_key, paste0(spacetime_variant(switches), iter), sep = "_")                                # or a _ppc fit
+theme_set(theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank(), legend.position = "top"))
+if (file.exists(f_expected)) basename(f_expected) else key
+```
+
+```{r}
+#| label: fit
+f_inputs = out(paste0("daily_", window_key, "_inputs.rds"))
+d = if (file.exists(f_inputs)) readRDS(f_inputs) else daily_inputs(params$areas, as.Date(params$from), as.Date(params$to))
+if (!file.exists(f_inputs)) saveRDS(d, f_inputs)
+f = out(paste0("spacetime_", key, ".rds"))
+if (!file.exists(f_expected)) {
+	if (file.exists(f)) fit = readRDS(f) else {
+		fit = rstan::sampling(rstan::stan_model("stan/spacetime.stan"), data = spacetime_data(d, switches), iter = params$iter,
+			warmup = params$iter / 2, chains = 4, cores = 4, refresh = 50, pars = "log_lik", include = FALSE)
+		saveRDS(fit, f)
+	}
+}
+```
+
+Draws used: `r params$n_draws` (all of the PALMA file's, if fewer), spread over the chains. Replicated counts
+y_rep ~ NB(expected, phi) per draw.
+
+```{r}
+#| label: draws
+set.seed(1)
+if (file.exists(f_expected)) {
+	e = readRDS(f_expected)
+	draw = sort(sample(dim(e$expected_cell)[1], min(params$n_draws, dim(e$expected_cell)[1])))
+	mu = e$expected_cell[draw, , , drop = FALSE]                            # draw x ABS x day
+	size = array(e$phi[draw, , drop = FALSE], dim(mu))
+	rm(e)
+} else {
+	draw = sort(sample(nrow(as.matrix(fit, pars = "lp__")), params$n_draws))
+	mu = rstan::extract(fit, "expected_cell")[[1]][draw, , , drop = FALSE]
+	size = array(rstan::extract(fit, "phi")[[1]][draw, , drop = FALSE], dim(mu))
+}
+y = d$cases
+yy = array(rep(y, each = length(draw)), dim(mu))
+y_rep = array(rnbinom(length(mu), size = size, mu = mu), dim(mu))
+group = cut(rank(rowMeans(y), ties.method = "first"), 3, labels = c("fewest cases", "middle", "most cases"))   # ABS thirds
+```
+
+## PIT histograms
+
+Non-randomised PIT for counts (Czado, Gneiting and Held 2009): the predictive CDF of each ABS-day (averaged over the
+draws) at y - 1 and y, turned into a uniform on [P(y - 1), P(y)] and averaged over ABS-days. A calibrated model gives a
+flat histogram at 1; a U shape is too narrow a predictive distribution (under-dispersed), a hump too wide, a slope
+biased.
+
+```{r}
+#| label: pit
+#| fig-height: 3.5
+cdf = \(q) apply(pnbinom(q, size = size, mu = mu), 2:3, mean)    # ABS x day
+P = cdf(yy)
+P_minus = cdf(yy - 1)
+pit_bins = \(keep, J = 10) {
+	u = seq(0, 1, length.out = J + 1)
+	F = vapply(u, \(v) mean(ifelse(P[keep] > P_minus[keep], pmin(pmax((v - P_minus[keep]) / (P[keep] - P_minus[keep]), 0), 1), v >= P[keep])), 0)
+	data.frame(bin = (u[-1] + u[-(J + 1)]) / 2, density = diff(F) * J)
+}
+pit = rbind(cbind(pit_bins(TRUE), group = "all ABS"),
+	do.call(rbind, lapply(levels(group), \(g) cbind(pit_bins(matrix(group == g, nrow(y), ncol(y))), group = g))))
+pit$group = factor(pit$group, c("all ABS", levels(group)))
+ggplot(pit, aes(bin, density)) + geom_col(width = 0.1, fill = "grey70", colour = "white") + geom_hline(yintercept = 1, lty = 2) +
+	facet_wrap(~group, nrow = 1) + labs(x = "PIT", y = "Density")
+```
+
+## Daily totals
+
+Observed cases summed over the ABS, against the 90% interval of the replicated totals.
+
+```{r}
+#| label: totals
+#| fig-height: 3.5
+total = apply(y_rep, c(1, 3), sum)
+band = data.frame(date = d$dates, observed = colSums(y), t(apply(total, 2, quantile, c(0.05, 0.5, 0.95)))) |>
+	setNames(c("date", "observed", "lo", "mid", "hi"))
+ggplot(band, aes(date)) + geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") + geom_line(aes(y = mid), colour = "grey40") +
+	geom_point(aes(y = observed), colour = "red", size = 0.8) + labs(x = NULL, y = "Cases a day")
+c(days_inside_90 = mean(band$observed >= band$lo & band$observed <= band$hi))
+```
+
+## Zero counts and weekdays
+
+The share of days with no case in each ABS, observed against replicated (median and 90% interval), and the mean
+cases by weekday.
+
+```{r}
+#| label: zeros
+#| fig-height: 4
+zero = apply(y_rep == 0, 1:2, mean)                  # draw x ABS
+z = data.frame(observed = rowMeans(y == 0), t(apply(zero, 2, quantile, c(0.05, 0.5, 0.95))), group = group) |>
+	setNames(c("observed", "lo", "mid", "hi", "group"))
+ggplot(z, aes(observed, mid, colour = group)) + geom_abline(lty = 2) + geom_errorbar(aes(ymin = lo, ymax = hi), width = 0) +
+	geom_point() + labs(x = "Observed share of zero days", y = "Replicated share", colour = NULL)
+c(abs_inside_90 = mean(z$observed >= z$lo & z$observed <= z$hi))
+weekday = factor(format(d$dates, "%a"), format(as.Date("2024-01-01") + 0:6, "%a"))
+wd = vapply(levels(weekday), \(w) c(observed = mean(y[, weekday == w]), quantile(apply(y_rep[, , weekday == w, drop = FALSE], 1, mean), c(0.05, 0.5, 0.95))), numeric(4))
+round(t(wd), 2)
+```

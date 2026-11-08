@@ -5,3 +5,12 @@ mobilityCovid/
 2_figures.html
 2_figures_files/
 .quarto/
+palma/
+stan/spacetime
+stan/*.rds
+*.knit.md
+5_spacetime_files/
+*_catalunya_*.html
+*_barcelona_*.html
+article_notes.md
+next_steps.md
