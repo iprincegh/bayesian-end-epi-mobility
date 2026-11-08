@@ -13,3 +13,5 @@ stan/*.rds
 *_files/
 article_notes.md
 next_steps.md
+7_checks.qmd
+8_recovery.qmd

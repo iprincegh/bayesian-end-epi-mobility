@@ -25,8 +25,6 @@ ABS coefficients as random effects with static covariates. The final model is `M
 |---|---|
 | `5_spacetime.qmd` | fits the final model, or one variant of it (switches as `SWITCHES` in `helpers.R`) |
 | `6_cv.qmd` | cross-validation of a set of variants (`CV_SETS`): whole weeks held out, or a random share of the ABS of each day |
-| `7_checks.qmd` | PIT histograms and posterior predictive checks of one fit |
-| `8_recovery.qmd` | fake-data recovery of the main quantities |
 
 Results of this model are not published yet.
 

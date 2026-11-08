@@ -4,21 +4,21 @@ format:
   html:
     code-fold: true
     code-tools: true
-    embed-resources: true    # figures inside each report, so reports of different variants do not share image files
+    embed-resources: true
 params:
   areas: barcelona
   from: "2020-09-01"
   to: "2020-12-31"
-  time_effect: 2      # defaults: the final model, MODEL in helpers.R
+  time_effect: 2
   negbin: 1
-  pooled: 1           # ABS coefficients as iid random effects (Paul and Held 2011); 2: adaptive Leroux CAR
-  testing: 0          # 1: whole mean (Slater eq. 5); 2: pi_t on endemic, pi_t / pi_t-s on epidemic
+  pooled: 1
+  testing: 0
   vaccination: 0
   rw_order: 1
   gamma_prior: 0.2
   npi: 0
   mob_closure: 0
-  lag_dist: 0         # the other switches: variants tested against it
+  lag_dist: 0
   lag_min: 4
   phi_area: 1
   holiday: 1
@@ -26,12 +26,12 @@ params:
   mob_lags: 2
   ne_powerlaw: 0
   day_effect: 0
-  covariates: 1       # static ABS covariates in the pooled means (needs pooled 1 or 2; COVARIATES in helpers.R)
-  placebo: 0          # negative control: each ABS gets another ABS's mobility pressures
-  no_mobility: 0      # coupling comparison: no trip term
-  no_neighbour: 0     # coupling comparison: no neighbour term
+  covariates: 1
+  placebo: 0
+  no_mobility: 0
+  no_neighbour: 0
   save_expected: 0
-  iter: 1000          # iterations per chain, half warm-up (theirs: 1000); other values get their own fit file
+  iter: 1000
 execute:
   warning: false
   message: false
@@ -71,7 +71,7 @@ recovery: `8_recovery.qmd`.
 #| label: setup
 suppressMessages({library(rstan); library(ggplot2)})
 stopifnot("run from end-epi/slater" = file.exists("helpers.R"))
-if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("5_spacetime.qmd")$params   # running chunks interactively
+if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("5_spacetime.qmd")$params
 source("helpers.R")
 window_key = paste(params$areas, params$from, params$to, sep = "_")
 variant = paste0(spacetime_variant(params), if (params$iter != 1000) paste0("_iter", params$iter))
@@ -126,7 +126,7 @@ hyperparameters.
 hyper = c("gamma_sd", "delta_sd", "tau", "beta_test", "inv_sqrt_phi", "coef_mu", "coef_sd", "coef_lambda", "coef_s_sd",
 	"coef_s_lambda", "logit_c0", "c_sd", "c_lambda", "delta_s_sd", "delta_s_lambda", "beta_npi", "beta_mob_closure",
 	"lag_mean", "lag_inv_sqrt_phi", "ne_decay", "log_phi_mu", "log_phi_sd", "beta_holiday", "day_sd", "beta_cov")
-hyper = hyper[vapply(hyper, \(p) p %in% names(fit@par_dims) && prod(fit@par_dims[[p]]) > 0, logical(1))]   # of this variant
+hyper = hyper[vapply(hyper, \(p) p %in% names(fit@par_dims) && prod(fit@par_dims[[p]]) > 0, logical(1))]
 report(fit, readRDS(f_loo), pars = c("coef", "weekday_effect", if (params$time_effect >= 1) "gamma",
 	if (params$time_effect >= 2) "delta", if (params$pooled == 2) "coef_log_s",
 	if (params$time_effect == 3) c("c_area", "delta_log_s"), if (params$phi_area) "phi_z", hyper))

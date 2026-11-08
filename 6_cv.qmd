@@ -10,7 +10,7 @@ params:
   from: "2020-09-01"
   to: "2020-12-31"
   K: 6
-  set: refinements   # a name of CV_SETS in helpers.R; the first variant of the set is the reference
+  set: refinements
 execute:
   warning: false
   message: false
@@ -35,12 +35,12 @@ all. The results section uses the variants with all folds done, so a partial run
 #| label: setup
 suppressMessages({library(rstan); library(ggplot2)})
 stopifnot("run from end-epi/slater" = file.exists("helpers.R"))
-if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("6_cv.qmd")$params   # running chunks interactively
+if (!isTRUE(getOption("knitr.in.progress"))) params = rmarkdown::yaml_front_matter("6_cv.qmd")$params
 source("helpers.R")
 window_key = paste(params$areas, params$from, params$to, sep = "_")
 dir.create(out("cv"), showWarnings = FALSE)
 theme_set(theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank(), legend.position = "top"))
-variants = CV_SETS[[params$set]]    # helpers.R, shared with palma/prepare_cv.R
+variants = CV_SETS[[params$set]]
 names(variants)
 ```
 
@@ -57,13 +57,13 @@ d = if (file.exists(f_inputs)) readRDS(f_inputs) else daily_inputs(params$areas,
 if (!file.exists(f_inputs)) saveRDS(d, f_inputs)
 model = rstan::stan_model("stan/spacetime.stan")
 scheme = CV_SCHEME[[params$set]]
-fold_file = \(v, k) cv_fold_file(window_key, v, k, params$K, scheme)   # lpd(): log mean likelihood over draws, helpers.R
+fold_file = \(v, k) cv_fold_file(window_key, v, k, params$K, scheme)
 for (v in names(variants)) for (k in seq_len(params$K)) {
 	if (!fit_now || file.exists(fold_file(v, k))) next
 	holdout = cv_holdout(scheme, nrow(d$cases), ncol(d$cases), k, params$K)
 	fit = rstan::sampling(model, data = spacetime_data(d, variants[[v]], holdout), iter = 1000, warmup = 500, chains = 4,
 		cores = 4, refresh = 0, pars = "log_lik")
-	held = which(holdout == 1)                      # column-major ABS x day cells, as log_lik[, i, t] flattened
+	held = which(holdout == 1)
 	ll = matrix(rstan::extract(fit, "log_lik")[[1]], ncol = length(d$cases))[, held]
 	saveRDS(list(cell = held, elpd = lpd(ll), divergent = rstan::get_num_divergent(fit),
 		max_rhat = max(rstan::summary(fit)$summary[, "Rhat"], na.rm = TRUE)), fold_file(v, k))
