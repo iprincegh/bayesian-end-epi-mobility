@@ -9,9 +9,9 @@ Catalunya from 2020-03-22 to 2021-05-01, and to the 67 ABS of Barcelona city.
 
 ## Run
 
-Render the notebooks from this folder, in order: `1_barcelona.qmd`, `2_catalunya.qmd`, `3_figures.qmd`,
-`4_results.qmd`. They expect the data repository below at `../Spain-data`. `0_reproduce.qmd` refits the original
-Castilla-León model and needs Slater's repository cloned into `mobilityCovid/`.
+This branch holds the model for the article. The replication notebooks and their pages are on `main`. Here,
+`1_barcelona.qmd` and `2_catalunya.qmd` fit the replicated model (`stan/daily.stan`), the comparison model. Render from
+this folder; the data repository below is expected at `../Spain-data`.
 
 ## Space-time model (this branch, in progress)
 
