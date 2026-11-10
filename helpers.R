@@ -198,11 +198,11 @@ extra_inputs = function(d) {
 # switches of stan/spacetime.stan and their defaults
 SWITCHES = list(time_effect = 0, vaccination = 0, testing = 0, pooled = 0, negbin = 0, rw_order = 1, gamma_prior = 0.5,
 	npi = 0, mob_closure = 0, lag_dist = 0, lag_min = 4, phi_area = 0, holiday = 0, no_within = 0, mob_lags = 2,
-	ne_powerlaw = 0, day_effect = 0, placebo = 0, no_mobility = 0, no_neighbour = 0, covariates = 0, split_within = 0, save_expected = 0)
+	ne_powerlaw = 0, day_effect = 0, placebo = 0, no_mobility = 0, no_neighbour = 0, covariates = 0, split_within = 0, mob_shared = 0, save_expected = 0)
 BASELINE = list(time_effect = 2, negbin = 1, gamma_prior = 0.2)
 # CV_REF: reference of the cross-validation rounds; MODEL: the final model
 CV_REF = modifyList(BASELINE, list(holiday = 1, phi_area = 1))
-MODEL = modifyList(CV_REF, list(pooled = 1, covariates = 1, day_effect = 2, split_within = 1, ne_powerlaw = 2))
+MODEL = modifyList(CV_REF, list(pooled = 1, covariates = 1, day_effect = 2, split_within = 1, ne_powerlaw = 2, mob_shared = 1))
 
 # static covariates: coefficient row (1 endemic, 2 autoregressive) and transformation
 COVARIATES = list(income_median = list(row = 1, f = log), pct_foreign = list(row = 1, f = identity),
@@ -251,7 +251,7 @@ spacetime_data = function(d, switches, holdout = NULL) {
 	if (is.null(holdout)) holdout = matrix(0L, nrow(d$cases), ncol(d$cases))
 	c(list(n_areas = nrow(d$cases), n_days = ncol(d$cases), cases = d$cases, n_lags = N_LAGS, n_orders = length(ne),
 			autoregressive_lags = columns(d$lagged_cases), neighbour_lags = stack(lapply(ne, columns)),
-			mobility_lags = stack(lapply(mob, columns)), split_within = as.integer(s$split_within),
+			mobility_lags = stack(lapply(mob, columns)), split_within = as.integer(s$split_within), mob_shared = as.integer(s$mob_shared),
 			within_lags = if (s$split_within) stack(lapply(e$within[seq_len(s$mob_lags)], \(m) columns(if (s$no_mobility) lapply(m, \(x) 0 * x) else m)))
 				else array(0, c(s$mob_lags, 0, if (s$lag_dist) N_LAGS else 1)),
 			pop = as.numeric(d$pop), weekday = as.integer(format(d$dates, "%u")), prior_scale = c(0.01, 2, 500, rep(2, s$mob_lags))),
@@ -281,7 +281,7 @@ spacetime_variant = function(switches) with(modifyList(SWITCHES, switches[inters
 		if (testing) c("_testing", "_testing2")[testing], if (vaccination) "_vaccination", if (lag_dist) paste0("_lagnb", lag_min),
 		if (phi_area) "_phiarea", if (holiday) "_holiday", if (no_within) "_nowithin", if (mob_lags == 3) "_mob3",
 		if (ne_powerlaw) c("_powerlaw", "_pl")[ne_powerlaw], if (day_effect) c("_dayeffect", "_dayprov")[day_effect], if (placebo) "_placebo",
-		if (no_mobility) "_nomob", if (no_neighbour) "_none", if (covariates) "_cov", if (save_expected) "_ppc"))
+		if (no_mobility) "_nomob", if (no_neighbour) "_none", if (covariates) "_cov", if (mob_shared) "_mobshared", if (save_expected) "_ppc"))
 
 # cross-validation variant sets and the fold scheme of each
 CV_VARIANTS = c(list(BASELINE), lapply(list(list(lag_dist = 1, lag_min = 4), list(lag_dist = 1, lag_min = 7),

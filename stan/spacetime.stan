@@ -84,6 +84,7 @@ data {
 	matrix<lower=0>[ne_pl ? n_areas : 0, ne_pl ? n_days : 0] pl_prev;
 	array[mob_lags] matrix<lower=0>[n_areas * n_days, lag_dist ? n_lags : 1] mobility_lags;
 	int<lower=0, upper=1> split_within;
+	int<lower=0, upper=1> mob_shared;   // one area effect for all mobility windows
 	// the within-ABS part of each mobility pressure, for the split of the mobility channel
 	array[mob_lags] matrix<lower=0>[split_within ? n_areas * n_days : 0, lag_dist ? n_lags : 1] within_lags;
 	vector<lower=0>[n_areas] pop;
@@ -150,6 +151,7 @@ transformed data {
 	if (phi_area && !negbin) reject("phi_area needs negbin");
 	if (ne_pl && (n_orders > 1 || lag_dist)) reject("ne_pl replaces n_orders > 1 and needs the fixed lag");
 	if (n_cov > 0 && pooled == 0) reject("covariates need pooled coefficients");
+	if (mob_shared && pooled != 1) reject("mob_shared needs pooled = 1");
 	if (fixed) {
 		ar_fixed = to_matrix(autoregressive_lags[, 1], n_areas, n_days);
 		ne_fixed = to_matrix(neighbour_lags[1][, 1], n_areas, n_days);
@@ -220,7 +222,9 @@ transformed parameters {
 	else {
 		matrix[n_coef, n_areas] z = coef_z;
 		if (pooled == 2) z[2:n_coef] = diag_post_multiply(z[2:n_coef], exp(coef_log_s));
-		matrix[n_coef, n_areas] lm = rep_matrix(coef_mu, n_areas) + diag_pre_multiply(coef_sd, z);
+		vector[n_coef] s = coef_sd;
+		if (mob_shared) for (k in 5:n_coef) {z[k] = z[4]; s[k] = coef_sd[4];}
+		matrix[n_coef, n_areas] lm = rep_matrix(coef_mu, n_areas) + diag_pre_multiply(s, z);
 		for (c in 1:n_cov) lm[cov_row[c]] += beta_cov[c] * covariate[, c]';
 		coef = exp(lm);
 	}

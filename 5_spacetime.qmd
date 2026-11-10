@@ -28,6 +28,7 @@ params:
   day_effect: 2
   covariates: 1
   split_within: 1
+  mob_shared: 1
   placebo: 0
   no_mobility: 0
   no_neighbour: 0
